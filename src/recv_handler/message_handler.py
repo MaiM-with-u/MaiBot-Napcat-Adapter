@@ -12,6 +12,7 @@ from .qq_emoji_list import qq_face
 from .message_sending import message_send_instance
 from . import RealMessageType, MessageType, ACCEPT_FORMAT
 
+import asyncio
 import time
 import json
 import websockets as Server
@@ -52,7 +53,7 @@ class MessageHandler:
                 logger.debug("心跳正常")
             await asyncio.sleep(self.interval)
 
-    async def check_allow_to_chat(self, user_id: int, group_id: Optional[int] = None) -> bool:
+    async def check_allow_to_chat(self, user_id: int, group_id: Optional[int] = None, ignore_bot: bool = False, ignore_global_list: bool = False) -> bool:
         # sourcery skip: hoist-statement-from-if, merge-else-if-into-elif
         """
         检查是否允许聊天
