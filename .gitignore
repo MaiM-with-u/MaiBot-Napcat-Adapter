@@ -19,7 +19,7 @@ elua.confirmed
 # C extensions
 *.so
 /results
-
+config_backup/
 # Distribution / packaging
 .Python
 build/
