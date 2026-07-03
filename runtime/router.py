@@ -173,6 +173,14 @@ class NapCatEventRouter:
         runtime = self._require_runtime()
         settings = self._load_settings()
 
+        notice_type = str(payload.get("notice_type") or "").strip()
+        sub_type = str(payload.get("sub_type") or "").strip()
+        if not runtime.notice_filter.is_notice_event_allowed(notice_type, sub_type, settings.notice):
+            self._logger.debug(
+                f"NapCat 通知事件未启用，已丢弃: {notice_type}.{sub_type or '<空>'}"
+            )
+            return
+
         group_id = str(payload.get("group_id") or "").strip()
         actor_user_id = resolve_actor_user_id(payload)
         # 群/私聊至少能确定其一时才做名单过滤；两者皆空的通知无法归类，保持放行

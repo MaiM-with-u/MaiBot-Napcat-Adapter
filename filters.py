@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Collection, List, Pattern
 
-from .config import NapCatChatConfig, NapCatFilterConfig
+from .config import NapCatChatConfig, NapCatFilterConfig, NapCatNoticeConfig
 
 
 class NapCatRegexFilter:
@@ -185,3 +185,64 @@ class NapCatChatFilter:
         if list_type == "whitelist":
             return target_id in configured_ids
         return target_id not in configured_ids
+
+
+class NapCatNoticeFilter:
+    """NapCat 通知事件类型过滤器。
+
+    依据通知事件配置，按白名单方式决定某类通知是否允许注入 Host：
+    仅明确启用的类型放行，未列出的类型（如输入状态 ``notify.input_status``）默认丢弃。
+    """
+
+    _NOTICE_TYPE_FIELDS = {
+        "friend_recall": "enable_friend_recall",
+        "group_recall": "enable_group_recall",
+        "group_ban": "enable_group_ban",
+        "group_msg_emoji_like": "enable_group_msg_emoji_like",
+        "group_upload": "enable_group_upload",
+        "group_increase": "enable_group_increase",
+        "group_decrease": "enable_group_decrease",
+        "group_admin": "enable_group_admin",
+        "essence": "enable_essence",
+    }
+
+    def __init__(self, logger: Any) -> None:
+        """初始化通知事件过滤器。
+
+        Args:
+            logger: 插件日志对象。
+        """
+        self._logger = logger
+
+    def is_notice_event_allowed(
+        self,
+        notice_type: str,
+        sub_type: str,
+        notice_config: NapCatNoticeConfig,
+    ) -> bool:
+        """判断指定通知事件是否允许注入 Host。
+
+        Args:
+            notice_type: 通知事件主类型。
+            sub_type: 通知事件子类型；无子类型时为空字符串。
+            notice_config: 当前生效的通知事件配置。
+
+        Returns:
+            bool: 若该通知允许继续进入 Host，则返回 ``True``。
+        """
+        if not notice_config.enabled:
+            return False
+
+        if notice_type == "notify":
+            if sub_type == "poke":
+                return notice_config.enable_poke
+            if sub_type == "group_name":
+                return notice_config.enable_group_name
+            # notify 下的其它子类型（如输入状态 input_status）默认不传递
+            return False
+
+        field_name = self._NOTICE_TYPE_FIELDS.get(notice_type)
+        if field_name is None:
+            # 未在配置中列出的通知类型默认不传递
+            return False
+        return bool(getattr(notice_config, field_name))

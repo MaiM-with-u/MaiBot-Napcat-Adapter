@@ -50,6 +50,28 @@ def _schema_i18n(
     return i18n
 
 
+def _notice_field(
+    *,
+    label: str,
+    description: str,
+    order: int,
+    label_en: str,
+    label_ja: str,
+) -> Any:
+    """构造通知事件开关字段，统一默认放行与 WebUI 多语言标签。"""
+
+    return Field(
+        default=True,
+        description=description,
+        json_schema_extra={
+            "hint": description,
+            "i18n": _schema_i18n(label_en=label_en, label_ja=label_ja),
+            "label": label,
+            "order": order,
+        },
+    )
+
+
 class NapCatPluginOptions(PluginConfigBase):
     """插件级配置。"""
 
@@ -480,7 +502,7 @@ class NapCatFilterConfig(PluginConfigBase):
     """消息过滤配置。"""
 
     __ui_label__: ClassVar[str] = "消息过滤"
-    __ui_order__: ClassVar[int] = 3
+    __ui_order__: ClassVar[int] = 4
 
     ignore_self_message: bool = Field(
         default=True,
@@ -553,12 +575,117 @@ class NapCatFilterConfig(PluginConfigBase):
         return _normalize_string_list(value)
 
 
+class NapCatNoticeConfig(PluginConfigBase):
+    """通知事件传递配置。
+
+    采用白名单式开关：仅明确启用的通知类型会注入 Host，
+    未在此处列出的通知类型（如输入状态 notify.input_status）默认丢弃。
+    """
+
+    __ui_label__: ClassVar[str] = "通知事件"
+    __ui_order__: ClassVar[int] = 3
+
+    enabled: bool = Field(
+        default=True,
+        description="是否将 NapCat 推送的通知事件转发给 Host。",
+        json_schema_extra={
+            "hint": "关闭后，戳一戳、禁言、撤回、入群退群等所有通知事件都不会传入 Host。",
+            "i18n": _schema_i18n(
+                label_en="Enable notice events",
+                label_ja="通知イベントを有効化",
+                hint_en="When disabled, poke, ban, recall, member change and all other notice events are not routed to the Host.",
+                hint_ja="無効にすると、poke、禁言、撤回、メンバー変更などすべての通知イベントは Host に転送されません。",
+            ),
+            "label": "启用通知事件",
+            "order": 0,
+        },
+    )
+    enable_poke: bool = _notice_field(
+        label="传递戳一戳",
+        description="是否传递戳一戳通知。",
+        order=1,
+        label_en="Route poke",
+        label_ja="poke を転送",
+    )
+    enable_friend_recall: bool = _notice_field(
+        label="传递好友撤回",
+        description="是否传递好友消息撤回通知。",
+        order=2,
+        label_en="Route friend recall",
+        label_ja="友達の撤回を転送",
+    )
+    enable_group_recall: bool = _notice_field(
+        label="传递群消息撤回",
+        description="是否传递群消息撤回通知。",
+        order=3,
+        label_en="Route group recall",
+        label_ja="グループ撤回を転送",
+    )
+    enable_group_ban: bool = _notice_field(
+        label="传递禁言",
+        description="是否传递群禁言和解除禁言通知。",
+        order=4,
+        label_en="Route group ban",
+        label_ja="グループ禁言を転送",
+    )
+    enable_group_msg_emoji_like: bool = _notice_field(
+        label="传递消息表情回应",
+        description="是否传递群消息表情回应通知。",
+        order=5,
+        label_en="Route emoji reactions",
+        label_ja="絵文字リアクションを転送",
+    )
+    enable_group_upload: bool = _notice_field(
+        label="传递群文件上传",
+        description="是否传递群文件上传通知。",
+        order=6,
+        label_en="Route group uploads",
+        label_ja="グループファイルを転送",
+    )
+    enable_group_increase: bool = _notice_field(
+        label="传递入群",
+        description="是否传递群成员增加通知。",
+        order=7,
+        label_en="Route member joins",
+        label_ja="参加通知を転送",
+    )
+    enable_group_decrease: bool = _notice_field(
+        label="传递退群",
+        description="是否传递群成员减少通知。",
+        order=8,
+        label_en="Route member leaves",
+        label_ja="退出通知を転送",
+    )
+    enable_group_admin: bool = _notice_field(
+        label="传递管理员变动",
+        description="是否传递群管理员变动通知。",
+        order=9,
+        label_en="Route admin changes",
+        label_ja="管理者変更を転送",
+    )
+    enable_essence: bool = _notice_field(
+        label="传递精华消息",
+        description="是否传递精华消息变动通知。",
+        order=10,
+        label_en="Route essence changes",
+        label_ja="精華メッセージを転送",
+    )
+    enable_group_name: bool = _notice_field(
+        label="传递群名变更",
+        description="是否传递群名称变更通知。",
+        order=11,
+        label_en="Route group name changes",
+        label_ja="グループ名変更を転送",
+    )
+
+
 class NapCatPluginSettings(PluginConfigBase):
     """NapCat 插件完整配置。"""
 
     plugin: NapCatPluginOptions = Field(default_factory=NapCatPluginOptions)
     napcat_server: NapCatServerConfig = Field(default_factory=NapCatServerConfig)
     chat: NapCatChatConfig = Field(default_factory=NapCatChatConfig)
+    notice: NapCatNoticeConfig = Field(default_factory=NapCatNoticeConfig)
     filters: NapCatFilterConfig = Field(default_factory=NapCatFilterConfig)
 
     @model_validator(mode="before")
@@ -579,6 +706,7 @@ class NapCatPluginSettings(PluginConfigBase):
         legacy_connection_section = _as_mapping(raw_mapping.get("connection"))
         chat_section = _as_mapping(raw_mapping.get("chat"))
         filters_section = _as_mapping(raw_mapping.get("filters"))
+        notice_section = _as_mapping(raw_mapping.get("notice"))
 
         if legacy_connection_section:
             LOGGER.warning("NapCat 适配器检测到旧版 [connection] 配置段，已自动迁移到 [napcat_server]")
@@ -618,6 +746,7 @@ class NapCatPluginSettings(PluginConfigBase):
         return {
             "chat": chat_section,
             "filters": filters_section,
+            "notice": notice_section,
             "napcat_server": normalized_server_section,
             "plugin": plugin_section,
         }

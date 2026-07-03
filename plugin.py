@@ -212,6 +212,8 @@ class NapCatAdapterPlugin(
                 f"NapCat 正则消息过滤已启用: 模式={settings.filters.regex_filter_mode}，"
                 f"规则数={len(settings.filters.regex_filter_patterns)}"
             )
+        if not settings.notice.enabled:
+            self.ctx.logger.info("NapCat 通知事件转发已整体关闭：所有通知都不会传入 Host")
 
         runtime_bundle.transport.configure(settings.napcat_server)
         await runtime_bundle.transport.start()

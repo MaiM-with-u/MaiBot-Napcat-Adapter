@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Coroutine
 from ..codecs.inbound import NapCatInboundCodec
 from ..codecs.notice import NapCatNoticeCodec
 from ..codecs.outbound import NapCatOutboundCodec
-from ..filters import NapCatChatFilter, NapCatRegexFilter
+from ..filters import NapCatChatFilter, NapCatNoticeFilter, NapCatRegexFilter
 from ..heartbeat_monitor import NapCatHeartbeatMonitor
 from ..runtime_state import NapCatRuntimeStateManager
 from ..services import (
@@ -57,6 +57,7 @@ class NapCatRuntimeBuilder:
             NapCatRuntimeBundle: 已完成依赖注入的运行时组件集合。
         """
         chat_filter = NapCatChatFilter(self._logger)
+        notice_filter = NapCatNoticeFilter(self._logger)
         regex_filter = NapCatRegexFilter(self._logger)
         transport = NapCatTransportClient(
             logger=self._logger,
@@ -95,6 +96,7 @@ class NapCatRuntimeBuilder:
             heartbeat_monitor=heartbeat_monitor,
             inbound_codec=inbound_codec,
             notice_codec=notice_codec,
+            notice_filter=notice_filter,
             official_bot_guard=official_bot_guard,
             outbound_codec=outbound_codec,
             query_service=query_service,
