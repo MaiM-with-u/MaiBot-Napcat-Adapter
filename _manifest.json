@@ -31,5 +31,6 @@
       "en-US"
     ]
   },
-  "id": "maibot-team.napcat-adapter"
+  "id": "maibot-team.napcat-adapter",
+  "plugin_type": "adapter"
 }
