@@ -1,7 +1,7 @@
 """内置 NapCat 适配器插件。
 
 当前实现承担完整的 QQ / NapCat 消息网关职责：
-1. 作为客户端连接 NapCat / OneBot v11 WebSocket 服务。
+1. 通过 WebSocket client/server 模式接入 NapCat / OneBot v11 服务。
 2. 将入站消息、通知事件与元事件转换为 Host 侧结构。
 3. 将 Host 出站消息转换为 OneBot 动作并发送。
 4. 通过公开 API 暴露 QQ 平台专属查询与管理动作。
@@ -75,7 +75,7 @@ class NapCatAdapterPlugin(
         route_type="duplex",
         platform="qq",
         protocol="napcat",
-        description="NapCat 正向 WebSocket 双工消息网关",
+        description="NapCat WebSocket 双工消息网关（支持 client/server）",
     )
     async def handle_napcat_gateway(
         self,

@@ -13,13 +13,14 @@ if TYPE_CHECKING:
     from aiohttp import ClientWebSocketResponse as AiohttpClientWebSocketResponse
 
 try:
-    from aiohttp import ClientSession, ClientTimeout, WSMsgType
+    from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 
     AIOHTTP_AVAILABLE = True
 except ImportError:
     ClientSession = cast(Any, None)
     ClientTimeout = cast(Any, None)
     WSMsgType = cast(Any, None)
+    web = cast(Any, None)
     AIOHTTP_AVAILABLE = False
 
 if not TYPE_CHECKING:
@@ -27,7 +28,7 @@ if not TYPE_CHECKING:
 
 
 class NapCatTransportClient:
-    """NapCat 正向 WebSocket 客户端。"""
+    """NapCat WebSocket 传输客户端（支持 client/server 双模式）。"""
 
     def __init__(
         self,
@@ -50,6 +51,7 @@ class NapCatTransportClient:
         self._on_payload = on_payload
         self._server_config: Optional[NapCatServerConfig] = None
         self._connection_task: Optional[asyncio.Task[None]] = None
+        self._server_runner: Optional[Any] = None
         self._pending_actions: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
         self._background_tasks: Set[asyncio.Task[Any]] = set()
         self._send_lock = asyncio.Lock()
@@ -77,7 +79,7 @@ class NapCatTransportClient:
         self._warned_missing_token_for_ws_url = None
 
     async def start(self) -> None:
-        """启动 NapCat 正向 WebSocket 连接循环。
+        """启动 NapCat WebSocket 连接循环。
 
         Raises:
             RuntimeError: 当缺少配置或依赖时抛出。
@@ -108,6 +110,12 @@ class NapCatTransportClient:
             connection_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await connection_task
+
+        server_runner = self._server_runner
+        self._server_runner = None
+        if server_runner is not None:
+            with contextlib.suppress(Exception):
+                await server_runner.cleanup()
 
         await self._cancel_background_tasks()
         await self._notify_connection_closed()
@@ -145,43 +153,134 @@ class NapCatTransportClient:
             self._pending_actions.pop(echo_id, None)
 
     async def _connection_loop(self) -> None:
-        """维护单个 WebSocket 连接，并在断开后按配置重连。"""
-        assert ClientSession is not None
-        assert ClientTimeout is not None
-
+        """根据配置选择 client/server 模式并维持连接。"""
         while not self._stop_requested:
             server_config = self._server_config
             if server_config is None:
                 return
 
-            ws_url = server_config.build_ws_url()
-            timeout = ClientTimeout(total=None, connect=10)
-            self._log_connection_attempt(ws_url, server_config)
-
             try:
-                async with ClientSession(headers=self._build_headers(server_config), timeout=timeout) as session:
-                    async with session.ws_connect(ws_url, heartbeat=server_config.heartbeat_interval or None) as ws:
-                        self._ws = ws
-                        self._logger.info(f"NapCat 适配器已连接: {ws_url}")
-                        disconnect_reason = await self._receive_loop(ws)
-                        self._log_connection_closed(ws_url, server_config, disconnect_reason)
+                if server_config.is_server_mode():
+                    await self._server_loop(server_config)
+                else:
+                    await self._client_loop(server_config)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._logger.warning(
-                    f"NapCat 适配器连接失败: {exc}"
+                    f"NapCat 适配器连接循环异常: {exc}"
                     f"{self._build_missing_token_hint(server_config)}"
                     f"{self._build_reconnect_hint(server_config)}"
                 )
-            finally:
+
+            if self._stop_requested:
+                return
+
+            await asyncio.sleep(server_config.reconnect_delay_sec)
+
+    async def _client_loop(self, server_config: NapCatServerConfig) -> None:
+        """维护 client 模式连接，并在断开后按配置重连。"""
+        assert ClientSession is not None
+        assert ClientTimeout is not None
+
+        ws_url = server_config.build_ws_url()
+        timeout = ClientTimeout(total=None, connect=10)
+        self._log_connection_attempt(ws_url, server_config)
+
+        try:
+            async with ClientSession(headers=self._build_headers(server_config), timeout=timeout) as session:
+                async with session.ws_connect(ws_url, heartbeat=server_config.heartbeat_interval or None) as ws:
+                    self._ws = ws
+                    self._logger.info(f"NapCat 适配器已连接: {ws_url}")
+                    disconnect_reason = await self._receive_loop(ws)
+                    self._log_connection_closed(ws_url, server_config, disconnect_reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._logger.warning(
+                f"NapCat 适配器连接失败: {exc}"
+                f"{self._build_missing_token_hint(server_config)}"
+                f"{self._build_reconnect_hint(server_config)}"
+            )
+        finally:
+            self._ws = None
+            await self._notify_connection_closed()
+            self._fail_pending_actions("NapCat connection interrupted")
+
+    async def _server_loop(self, server_config: NapCatServerConfig) -> None:
+        """维护 server 模式监听，等待 NapCat 主动连接。"""
+        assert web is not None
+
+        bind_host = server_config.host
+        bind_port = server_config.port
+        bind_label = f"ws://{bind_host}:{bind_port}{server_config.ws_path}"
+        self._logger.info(f"NapCat 适配器已进入 server 模式，开始监听: {bind_label}")
+
+        app = web.Application()
+        app.router.add_get(server_config.ws_path, self._handle_ws_upgrade)
+
+        runner = web.AppRunner(app)
+        self._server_runner = runner
+        await runner.setup()
+
+        site = web.TCPSite(runner, host=bind_host, port=bind_port)
+        await site.start()
+
+        try:
+            while not self._stop_requested:
+                await asyncio.sleep(0.5)
+        finally:
+            if self._server_runner is runner:
+                self._server_runner = None
+            with contextlib.suppress(Exception):
+                await runner.cleanup()
+
+    async def _handle_ws_upgrade(self, request: Any) -> Any:
+        """处理 server 模式下的 WebSocket 升级请求。"""
+        assert web is not None
+
+        server_config = self._server_config
+        if server_config is None:
+            return web.Response(status=503, text="NapCat adapter is not configured")
+
+        if not self._check_server_authorization(request, server_config):
+            return web.Response(status=401, text="Unauthorized")
+
+        ws = web.WebSocketResponse(heartbeat=server_config.heartbeat_interval or None)
+        await ws.prepare(request)
+
+        previous_ws = self._ws
+        if previous_ws is not None and not previous_ws.closed:
+            with contextlib.suppress(Exception):
+                await previous_ws.close(code=1000, message=b"Replaced by new NapCat connection")
+
+        self._ws = ws
+        peer = str(request.remote or "unknown")
+        self._logger.info(f"NapCat 适配器收到连接: {peer}")
+
+        try:
+            disconnect_reason = await self._receive_loop(ws)
+            self._logger.warning(f"NapCat 适配器连接已断开: {peer}，{disconnect_reason}{self._build_reconnect_hint(server_config)}")
+        finally:
+            if self._ws is ws:
                 self._ws = None
                 await self._notify_connection_closed()
                 self._fail_pending_actions("NapCat connection interrupted")
 
-            if self._stop_requested:
-                break
+        return ws
 
-            await asyncio.sleep(server_config.reconnect_delay_sec)
+    def _check_server_authorization(self, request: Any, server_config: NapCatServerConfig) -> bool:
+        """校验 server 模式下接入连接的鉴权信息。"""
+        token = server_config.token
+        if not token:
+            return True
+
+        auth_header = str(request.headers.get("Authorization") or "").strip()
+        if auth_header.startswith("Bearer "):
+            provided_token = auth_header[7:].strip()
+            return provided_token == token
+
+        return False
 
     async def _receive_loop(self, ws: AiohttpClientWebSocketResponse) -> str:
         """持续消费 WebSocket 消息并分发处理。
@@ -345,7 +444,9 @@ class NapCatTransportClient:
             server_config: 当前生效的 NapCat 服务端配置。
         """
         auth_mode = "已配置 token" if server_config.token else "未配置 token"
-        self._logger.debug(f"NapCat 适配器开始连接: {ws_url}（鉴权: {auth_mode}）")
+        self._logger.debug(
+            f"NapCat 适配器开始连接: {ws_url}（模式: {server_config.transport_mode}，鉴权: {auth_mode}）"
+        )
 
         if not server_config.token and self._warned_missing_token_for_ws_url != ws_url:
             self._logger.warning(

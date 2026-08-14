@@ -131,92 +131,125 @@ class NapCatPluginOptions(PluginConfigBase):
 
 
 class NapCatServerConfig(PluginConfigBase):
-    """NapCat 正向 WebSocket 连接配置。"""
+    """NapCat WebSocket 连接配置。"""
 
     __ui_label__: ClassVar[str] = "NapCat 连接"
     __ui_order__: ClassVar[int] = 1
 
+    transport_mode: Literal["client", "server"] = Field(
+        default="client",
+        description="NapCat WebSocket 连接模式：client 为主动连接，server 为被动监听。",
+        json_schema_extra={
+            "hint": "client 模式由适配器主动连接 NapCat；server 模式由适配器监听端口，等待 NapCat 反向连接。",
+            "i18n": _schema_i18n(
+                label_en="Transport mode",
+                label_ja="接続モード",
+                hint_en="client: adapter actively connects to NapCat; server: adapter listens and waits for NapCat to connect.",
+                hint_ja="client: アダプターが NapCat へ接続します。server: アダプターが待受し、NapCat からの接続を待ちます。",
+            ),
+            "label": "连接模式",
+            "order": 0,
+        },
+    )
     host: str = Field(
         default=DEFAULT_NAPCAT_HOST,
-        description="NapCat WebSocket 服务主机地址。",
+        description="WebSocket 主机地址。",
         json_schema_extra={
-            "hint": "通常为运行 NapCat 的宿主机地址，默认使用本机回环地址。",
+            "hint": "client 模式下填写 NapCat 地址；server 模式下填写本适配器监听地址，默认本机回环地址。",
             "i18n": _schema_i18n(
                 label_en="Host address",
                 label_ja="ホストアドレス",
-                hint_en="Usually the host running NapCat. Defaults to the local loopback address.",
-                hint_ja="通常は NapCat を実行しているホストです。既定ではローカルのループバックアドレスを使用します。",
+                hint_en="In client mode this is NapCat host; in server mode this is the adapter bind host. Defaults to loopback.",
+                hint_ja="client モードでは NapCat のホスト、server モードではアダプターの待受ホストです。既定はループバックです。",
                 placeholder_en="127.0.0.1",
                 placeholder_ja="127.0.0.1",
             ),
             "label": "主机地址",
-            "order": 0,
+            "order": 1,
             "placeholder": "127.0.0.1",
         },
     )
     port: int = Field(
         default=DEFAULT_NAPCAT_PORT,
-        description="NapCat WebSocket 服务端口。",
+        description="WebSocket 端口。",
         json_schema_extra={
-            "hint": "与 NapCat 正向 WebSocket 服务监听端口保持一致。",
+            "hint": "client 模式下填写 NapCat 端口；server 模式下填写本适配器监听端口。",
             "i18n": _schema_i18n(
                 label_en="Port",
                 label_ja="ポート",
-                hint_en="Keep this consistent with the NapCat forward WebSocket listening port.",
-                hint_ja="NapCat の正方向 WebSocket 待受ポートと一致させてください。",
+                hint_en="In client mode use NapCat listening port; in server mode use adapter listening port.",
+                hint_ja="client モードでは NapCat の待受ポート、server モードではアダプターの待受ポートです。",
             ),
             "label": "端口",
-            "order": 1,
+            "order": 2,
+        },
+    )
+    ws_path: str = Field(
+        default="/",
+        description="WebSocket 路径，默认根路径。",
+        json_schema_extra={
+            "hint": "client 模式会连接该路径；server 模式仅在该路径接受 WebSocket 升级。",
+            "i18n": _schema_i18n(
+                label_en="WebSocket path",
+                label_ja="WebSocket パス",
+                hint_en="Client mode connects to this path; server mode only accepts upgrades on this path.",
+                hint_ja="client モードではこのパスへ接続し、server モードではこのパスでのみアップグレードを受け付けます。",
+                placeholder_en="/ws",
+                placeholder_ja="/ws",
+            ),
+            "label": "WebSocket 路径",
+            "order": 3,
+            "placeholder": "/ws",
         },
     )
     token: str = Field(
         default="",
-        description="NapCat 访问令牌，未启用鉴权时可留空。",
+        description="WebSocket 鉴权令牌；未启用鉴权时可留空。",
         json_schema_extra={
-            "hint": "若 NapCat 开启了访问令牌校验，请在这里填写相同的 token。",
+            "hint": "client 模式下用于请求头 Authorization: Bearer <token>；server 模式下用于校验 NapCat 连接请求头中的 Bearer token。",
             "i18n": _schema_i18n(
                 label_en="Access token",
                 label_ja="アクセストークン",
-                hint_en="If NapCat access token verification is enabled, enter the same token here.",
-                hint_ja="NapCat でアクセストークン検証を有効にしている場合は、同じ token をここに入力してください。",
+                hint_en="Client mode sends Authorization: Bearer <token>; server mode validates the Bearer token in incoming requests.",
+                hint_ja="client モードでは Authorization: Bearer <token> を送信し、server モードでは受信リクエストの Bearer token を検証します。",
                 placeholder_en="Optional",
                 placeholder_ja="空欄可",
             ),
             "input_type": "password",
             "label": "访问令牌",
-            "order": 2,
+            "order": 4,
             "placeholder": "可留空",
         },
     )
     heartbeat_interval: float = Field(
         default=DEFAULT_HEARTBEAT_INTERVAL_SEC,
-        description="心跳超时判定间隔，单位为秒。",
+        description="WebSocket 心跳间隔，单位为秒。",
         json_schema_extra={
-            "hint": "用于判断 NapCat 连接是否失活，必须大于 0。",
+            "hint": "client/server 两种模式都会应用该值，用于维持连接活性并尽早发现失活连接。",
             "i18n": _schema_i18n(
                 label_en="Heartbeat interval (sec)",
                 label_ja="ハートビート間隔（秒）",
-                hint_en="Used to detect whether the NapCat connection is stale. Must be greater than 0.",
-                hint_ja="NapCat 接続が失活していないかを判定する間隔です。0 より大きい値にしてください。",
+                hint_en="Applied in both client and server modes to keep the connection alive and detect stale links. Must be greater than 0.",
+                hint_ja="client/server 両モードで適用され、接続維持と失活検知に使用されます。0 より大きい値にしてください。",
             ),
             "label": "心跳间隔（秒）",
-            "order": 3,
+            "order": 5,
             "step": 1,
         },
     )
     reconnect_delay_sec: float = Field(
         default=DEFAULT_RECONNECT_DELAY_SEC,
-        description="连接断开后的重连等待时间，单位为秒。",
+        description="client 模式下连接断开后的重连等待时间，单位为秒。",
         json_schema_extra={
-            "hint": "连接断开后会等待该时长再尝试重新连接。",
+            "hint": "仅对 client 模式生效；server 模式下该值不参与监听循环。",
             "i18n": _schema_i18n(
                 label_en="Reconnect delay (sec)",
                 label_ja="再接続待機（秒）",
-                hint_en="After a disconnect, wait this long before trying to reconnect.",
-                hint_ja="接続が切断された後、再接続を試すまでこの時間待機します。",
+                hint_en="Only effective in client mode: wait this long before reconnecting after a disconnect.",
+                hint_ja="client モードでのみ有効です。切断後、この時間待機してから再接続を試みます。",
             ),
             "label": "重连等待（秒）",
-            "order": 4,
+            "order": 6,
             "step": 1,
         },
     )
@@ -224,15 +257,15 @@ class NapCatServerConfig(PluginConfigBase):
         default=DEFAULT_ACTION_TIMEOUT_SEC,
         description="调用 NapCat 动作接口的超时时间，单位为秒。",
         json_schema_extra={
-            "hint": "发送消息、查询信息等动作会在超时后报错。",
+            "hint": "client/server 两种模式都会生效；发送消息、查询信息等动作会在超时后报错。",
             "i18n": _schema_i18n(
                 label_en="Action timeout (sec)",
                 label_ja="アクションタイムアウト（秒）",
-                hint_en="Actions such as sending messages or querying info fail after this timeout.",
-                hint_ja="メッセージ送信や情報取得などのアクションは、この時間を超えるとエラーになります。",
+                hint_en="Effective in both client and server modes. Actions such as sending messages or querying info fail after this timeout.",
+                hint_ja="client/server 両モードで有効です。メッセージ送信や情報取得などのアクションは、この時間を超えるとエラーになります。",
             ),
             "label": "动作超时（秒）",
-            "order": 5,
+            "order": 7,
             "step": 1,
         },
     )
@@ -250,19 +283,23 @@ class NapCatServerConfig(PluginConfigBase):
                 placeholder_ja="例：primary",
             ),
             "label": "连接标识",
-            "order": 6,
+            "order": 8,
             "placeholder": "例如：primary",
         },
     )
 
     def build_ws_url(self) -> str:
-        """构造正向 WebSocket 地址。
+        """构造 client 模式使用的 WebSocket 地址。
 
         Returns:
-            str: 供适配器作为客户端连接的 NapCat WebSocket 地址。
+            str: 供适配器主动连接 NapCat 使用的 WebSocket 地址。
         """
 
-        return f"ws://{self.host}:{self.port}"
+        return f"ws://{self.host}:{self.port}{self.ws_path}"
+
+    def is_server_mode(self) -> bool:
+        """判断当前传输层是否处于 server 模式。"""
+        return self.transport_mode == "server"
 
     @field_validator("host", mode="before")
     @classmethod
@@ -306,6 +343,32 @@ class NapCatServerConfig(PluginConfigBase):
         """
 
         return _normalize_string(value)
+
+    @field_validator("ws_path", mode="before")
+    @classmethod
+    def _normalize_ws_path(cls, value: Any) -> str:
+        """规范化 WebSocket 路径字段。"""
+        normalized_value = _normalize_string(value)
+        if not normalized_value:
+            return "/"
+
+        path = normalized_value.split("?", 1)[0].split("#", 1)[0].strip()
+        if not path:
+            return "/"
+        if not path.startswith("/"):
+            path = f"/{path}"
+
+        while "//" in path:
+            path = path.replace("//", "/")
+
+        return path or "/"
+
+    @field_validator("transport_mode", mode="before")
+    @classmethod
+    def _normalize_transport_mode(cls, value: Any) -> Literal["client", "server"]:
+        """规范化连接模式字段。"""
+        normalized_value = _normalize_string(value).lower()
+        return "server" if normalized_value == "server" else "client"
 
     @field_validator(
         "heartbeat_interval",
