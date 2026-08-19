@@ -10,6 +10,7 @@ from ..codecs.notice.helpers import resolve_actor_user_id
 from ..config import NapCatPluginSettings
 from ..types import NapCatPayloadDict
 from .bundle import NapCatRuntimeBundle
+from ..codecs.notice.helpers import resolve_actor_user_id
 
 
 class _GatewayCapabilityProtocol(Protocol):
@@ -141,6 +142,8 @@ class NapCatEventRouter:
     async def handle_notice_event(self, payload: NapCatPayloadDict) -> None:
         """处理 NapCat ``notice`` 事件并注入 Host。
 
+        遵循与普通消息一致的全局配置过滤规则（白名单/黑名单、禁止用户等）。
+
         Args:
             payload: NapCat 推送的通知事件。
         """
@@ -150,6 +153,24 @@ class NapCatEventRouter:
         self_id = str(payload.get("self_id") or "").strip()
         if self_id:
             await runtime.runtime_state.report_connected(self_id, settings.napcat_server)
+
+        # 应用全局过滤配置
+        notice_user_id = resolve_actor_user_id(payload)
+        group_id = str(payload.get("group_id") or "").strip()
+        # 若通知的目标用户是机器人自身（如被设置/取消管理员），
+        # 则跳过 ignore_self_message 检查，确保机器人感知到针对自己的操作。
+        target_user_id = str(payload.get("user_id") or "").strip()
+        is_targeting_self = bool(self_id and target_user_id == self_id)
+        if not is_targeting_self and self_id and notice_user_id == self_id and settings.filters.ignore_self_message:
+            return
+        if not runtime.chat_filter.is_inbound_chat_allowed(notice_user_id, group_id, settings.chat):
+            return
+        if await runtime.official_bot_guard.should_reject(
+            sender_user_id=notice_user_id,
+            group_id=group_id,
+            ban_qq_bot=settings.chat.ban_qq_bot,
+        ):
+            return
 
         await runtime.ban_tracker.record_notice(payload)
         await self.route_notice_payload(payload, self_id, settings.napcat_server.connection_id)

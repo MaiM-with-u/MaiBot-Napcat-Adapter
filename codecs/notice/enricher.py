@@ -55,6 +55,41 @@ class NapCatNoticeEntityResolver:
             "user_cardname": normalize_optional_string(member_info.get("card")),
         }
 
+    async def resolve_target_display_name(self, group_id: str, target_id: str) -> str:
+        """解析目标用户的显示名称，格式为 ``昵称[QQ号]``。
+
+        优先使用群名片，其次使用昵称，均不可用时仅返回 QQ 号。
+
+        Args:
+            group_id: 群号。
+            target_id: 目标用户 QQ 号。
+
+        Returns:
+            str: 格式化后的显示名称，如 ``小明[123456]``。
+        """
+        if not target_id:
+            return target_id
+
+        user_info = await self.build_user_info(group_id=group_id, user_id=target_id)
+        return self._format_display_name(user_info, target_id)
+
+    @staticmethod
+    def _format_display_name(user_info: Dict[str, Optional[str]], fallback_id: str) -> str:
+        """从用户信息字典中提取显示名称，格式为 ``昵称[QQ号]``。
+
+        Args:
+            user_info: 由 ``build_user_info`` 返回的用户信息字典。
+            fallback_id: 当信息不足时的回退 ID。
+
+        Returns:
+            str: 格式化后的显示名称。
+        """
+        nickname = user_info.get("user_nickname") or fallback_id
+        cardname = user_info.get("user_cardname")
+        display = cardname or nickname
+        user_id = user_info.get("user_id") or fallback_id
+        return f"{display}[{user_id}]"
+
     async def build_group_info(self, group_id: str) -> Optional[Dict[str, str]]:
         """构造通知消息的群信息。
 
