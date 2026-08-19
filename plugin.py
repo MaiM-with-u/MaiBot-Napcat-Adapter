@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, Mapping, Optional, cast
 
-from maibot_sdk import MaiBotPlugin, MessageGateway, PluginConfigBase
+from maibot_sdk import MaiBotPlugin, MessageGateway, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .apis import (
     NapCatAccountApiMixin,
@@ -21,7 +22,7 @@ from .apis import (
     NapCatSystemApiMixin,
 )
 from .config import NapCatPluginSettings
-from .constants import NAPCAT_GATEWAY_NAME
+from .constants import NAPCAT_GATEWAY_NAME, PRIVATE_CHAT_TOOL_BYPASS_SECONDS
 from .runtime import NapCatEventRouter, NapCatRuntimeBuilder, NapCatRuntimeBundle
 from .services import NapCatActionService, NapCatQueryService
 
@@ -48,6 +49,7 @@ class NapCatAdapterPlugin(
 
     async def on_load(self) -> None:
         """在插件加载时根据配置决定是否启动连接。"""
+        await self._sync_private_chat_tool_component_state()
         await self._restart_connection_if_needed()
 
     async def on_unload(self) -> None:
@@ -68,7 +70,157 @@ class NapCatAdapterPlugin(
         self.set_plugin_config(config_data)
         if version:
             self.ctx.logger.debug(f"NapCat 适配器收到配置更新通知: {version}")
+        await self._sync_private_chat_tool_component_state()
         await self._restart_connection_if_needed()
+
+    @Tool(
+        "open_private_chat",
+        description=(
+            "向指定 QQ 用户发送一条私聊消息，用于主动开启私聊。"
+            "发送成功后，该用户在 15 分钟内的私聊入站消息会绕过私聊黑白名单过滤。"
+        ),
+        parameters=[
+            ToolParameterInfo(
+                name="user_id",
+                param_type=ToolParamType.STRING,
+                description="要开启私聊的 QQ 用户 ID，必须是正整数。",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="message",
+                param_type=ToolParamType.STRING,
+                description="要发送给该用户的第一条私聊消息。",
+                required=True,
+            ),
+        ],
+        enabled=False,
+        visibility="visible",
+    )
+    async def tool_open_private_chat(
+        self,
+        user_id: Any = "",
+        message: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """主动向指定用户发送私聊消息，并临时放行该私聊。"""
+        del kwargs
+
+        try:
+            normalized_user_id = str(self._normalize_positive_int(user_id, "user_id"))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        normalized_message = str(message or "").strip()
+        if not normalized_message:
+            return {"success": False, "error": "私聊消息不能为空"}
+
+        runtime_bundle = self._require_runtime_bundle()
+        login_info = await runtime_bundle.query_service.get_login_info()
+        account_id = str((login_info or {}).get("user_id") or "").strip()
+        if not account_id:
+            return {"success": False, "error": "无法获取当前 NapCat 登录账号"}
+
+        settings = self._load_settings()
+        open_session_result = await self.ctx.chat.open_session(
+            platform="qq",
+            chat_type="private",
+            user_id=normalized_user_id,
+            account_id=account_id,
+            scope=settings.napcat_server.connection_id,
+        )
+        if not isinstance(open_session_result, Mapping) or not bool(open_session_result.get("success", False)):
+            error = str(open_session_result.get("error") or "").strip() if isinstance(open_session_result, Mapping) else ""
+            return {
+                "success": False,
+                "error": error or "打开私聊会话失败",
+                "open_session_result": open_session_result,
+            }
+
+        try:
+            response = await runtime_bundle.action_service.call_action(
+                "send_private_msg",
+                {
+                    "user_id": int(normalized_user_id),
+                    "message": [{"type": "text", "data": {"text": normalized_message}}],
+                },
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        expires_at = runtime_bundle.chat_filter.grant_private_chat_bypass(normalized_user_id)
+        response_data = response.get("data", {})
+        message_id = str(response_data.get("message_id") or "") if isinstance(response_data, Mapping) else ""
+        self.ctx.logger.info(f"NapCat 已主动开启私聊: user_id={normalized_user_id} message_id={message_id or '<unknown>'}")
+        return {
+            "success": True,
+            "content": f"已向用户 {normalized_user_id} 发送私聊消息，并在 15 分钟内临时放行该私聊。",
+            "user_id": normalized_user_id,
+            "stream_id": str(open_session_result.get("session_id") or open_session_result.get("stream_id") or ""),
+            "session": open_session_result.get("stream") or {},
+            "message_id": message_id,
+            "expires_at": expires_at,
+            "bypass_seconds": PRIVATE_CHAT_TOOL_BYPASS_SECONDS,
+        }
+
+    @Tool(
+        "get_qq_by_msg_id",
+        description="根据当前聊天中的消息 ID 获取该消息发送者的 QQ 用户 ID。",
+        parameters=[
+            ToolParameterInfo(
+                name="msg_id",
+                param_type=ToolParamType.STRING,
+                description="目标用户发送的消息 ID。",
+                required=True,
+            ),
+        ],
+        enabled=False,
+        visibility="visible",
+    )
+    async def tool_get_qq_by_msg_id(
+        self,
+        msg_id: str = "",
+        stream_id: str = "",
+        chat_id: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """根据消息 ID 查询该消息发送者的 QQ 号。"""
+        del kwargs
+
+        normalized_msg_id = str(msg_id or "").strip()
+        if not normalized_msg_id:
+            return {"success": False, "error": "缺少目标消息 ID"}
+
+        target_stream_id = str(stream_id or chat_id or "").strip()
+        query_result = await self.ctx.message.get_by_id(
+            normalized_msg_id,
+            stream_id=target_stream_id,
+            include_binary_data=False,
+        )
+        if not isinstance(query_result, Mapping):
+            return {"success": False, "error": f"未找到消息: {normalized_msg_id}", "msg_id": normalized_msg_id}
+
+        message_info = query_result.get("message_info", {})
+        user_info = message_info.get("user_info", {}) if isinstance(message_info, Mapping) else {}
+        user_info = user_info if isinstance(user_info, Mapping) else {}
+        user_id = str(user_info.get("user_id") or "").strip()
+        if not user_id:
+            return {"success": False, "error": f"消息 {normalized_msg_id} 缺少发送者 QQ 号", "msg_id": normalized_msg_id}
+
+        user_nickname = str(user_info.get("user_nickname") or "").strip()
+        user_cardname = str(user_info.get("user_cardname") or "").strip()
+        display_name = user_cardname or user_nickname or user_id
+        return {
+            "success": True,
+            "content": f"消息 {normalized_msg_id} 的发送者是 {display_name}，QQ 号为 {user_id}。",
+            "msg_id": normalized_msg_id,
+            "user_id": user_id,
+            "qq": user_id,
+            "user_nickname": user_nickname,
+            "user_cardname": user_cardname,
+            "display_name": display_name,
+            "platform": str(query_result.get("platform") or "").strip(),
+            "session_id": str(query_result.get("session_id") or target_stream_id).strip(),
+        }
 
     @MessageGateway(
         name=NAPCAT_GATEWAY_NAME,
@@ -167,6 +319,25 @@ class NapCatAdapterPlugin(
             )
             self._event_router.bind_runtime(self._runtime_bundle)
             self._bind_runtime_aliases(self._runtime_bundle)
+
+    async def _sync_private_chat_tool_component_state(self) -> None:
+        """按配置同步主动私聊工具组件的启停状态。"""
+
+        enabled = self._load_settings().plugin.enable_private_chat_tool
+        tool_names = ("open_private_chat", "get_qq_by_msg_id")
+        try:
+            for tool_name in tool_names:
+                if enabled:
+                    result = await self.ctx.component.enable_component(tool_name, "TOOL")
+                else:
+                    result = await self.ctx.component.disable_component(tool_name, "TOOL")
+                if isinstance(result, Mapping) and not bool(result.get("success", False)):
+                    self.ctx.logger.warning(
+                        f"NapCat 同步主动私聊工具启停状态失败: tool={tool_name} "
+                        f"error={result.get('error') or result}"
+                    )
+        except Exception as exc:
+            self.ctx.logger.warning(f"NapCat 同步主动私聊工具启停状态失败: {exc}")
 
     def _bind_runtime_aliases(self, runtime_bundle: NapCatRuntimeBundle) -> None:
         """同步运行时组件到插件级别的快捷引用。

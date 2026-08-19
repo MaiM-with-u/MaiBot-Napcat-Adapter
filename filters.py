@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Collection, List, Pattern
 
 from .config import NapCatChatConfig, NapCatFilterConfig, NapCatNoticeConfig
+from .constants import PRIVATE_CHAT_TOOL_BYPASS_SECONDS
 
 
 class NapCatRegexFilter:
@@ -120,6 +122,15 @@ class NapCatChatFilter:
             logger: 插件日志对象。
         """
         self._logger = logger
+        self._private_chat_bypass_expires_at: dict[str, float] = {}
+
+    def grant_private_chat_bypass(self, user_id: str) -> float:
+        """授予指定用户临时私聊名单放行窗口。"""
+
+        self._purge_expired_private_chat_bypasses()
+        expires_at = time.time() + PRIVATE_CHAT_TOOL_BYPASS_SECONDS
+        self._private_chat_bypass_expires_at[user_id] = expires_at
+        return expires_at
 
     def is_inbound_chat_allowed(
         self,
@@ -140,6 +151,13 @@ class NapCatChatFilter:
         if sender_user_id in chat_config.ban_user_id:
             self._logger.warning(f"NapCat 用户 {sender_user_id} 在全局禁止名单中，消息被丢弃")
             return False
+
+        if not group_id and self._has_active_private_chat_bypass(sender_user_id):
+            remaining_seconds = self._get_private_chat_bypass_remaining_seconds(sender_user_id)
+            self._logger.debug(
+                f"NapCat 私聊用户 {sender_user_id} 命中主动私聊临时放行，剩余 {remaining_seconds:.0f} 秒"
+            )
+            return True
 
         if not chat_config.enable_chat_list_filter:
             return True
@@ -164,6 +182,28 @@ class NapCatChatFilter:
             )
             return False
         return True
+
+    def _get_private_chat_bypass_remaining_seconds(self, user_id: str) -> float:
+        """获取指定用户临时私聊放行窗口的剩余秒数。"""
+
+        self._purge_expired_private_chat_bypasses()
+        expires_at = self._private_chat_bypass_expires_at.get(user_id, 0.0)
+        return max(0.0, expires_at - time.time())
+
+    def _has_active_private_chat_bypass(self, user_id: str) -> bool:
+        """判断指定用户是否处于临时私聊名单放行窗口内。"""
+
+        return self._get_private_chat_bypass_remaining_seconds(user_id) > 0
+
+    def _purge_expired_private_chat_bypasses(self) -> None:
+        """清理已过期的临时私聊名单放行记录。"""
+
+        now = time.time()
+        expired_user_ids = [
+            user_id for user_id, expires_at in self._private_chat_bypass_expires_at.items() if expires_at <= now
+        ]
+        for user_id in expired_user_ids:
+            self._private_chat_bypass_expires_at.pop(user_id, None)
 
     def _log_chat_list_rejection(self, enabled: bool, message: str) -> None:
         """按配置决定是否记录聊天名单过滤丢弃日志。"""

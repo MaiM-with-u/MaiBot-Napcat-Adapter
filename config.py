@@ -93,6 +93,27 @@ class NapCatPluginOptions(PluginConfigBase):
             "order": 0,
         },
     )
+    enable_private_chat_tool: bool = Field(
+        default=False,
+        description="是否启用主动开启私聊工具。",
+        json_schema_extra={
+            "hint": "开启后，模型可向指定 QQ 用户发送首条私聊消息，并在 15 分钟内临时绕过私聊名单过滤。",
+            "i18n": _schema_i18n(
+                label_en="Enable private chat tool",
+                label_ja="個人チャット開始ツールを有効化",
+                hint_en=(
+                    "When enabled, the model can send the first private message to a user "
+                    "and bypass private chat-list filtering for 15 minutes."
+                ),
+                hint_ja=(
+                    "有効にすると、モデルは指定ユーザーへ最初の個人メッセージを送信し、"
+                    "15 分間だけ個人チャットリストのフィルターを回避できます。"
+                ),
+            ),
+            "label": "启用主动私聊工具",
+            "order": 1,
+        },
+    )
     config_version: str = Field(
         default=SUPPORTED_CONFIG_VERSION,
         description="当前配置结构版本。",
